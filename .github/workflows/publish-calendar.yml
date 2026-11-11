@@ -1,0 +1,90 @@
+name: Publish site with BAND calendar
+
+on:
+  push:
+    branches: ["main"]
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare website files
+        run: |
+          mkdir -p _site
+          git archive HEAD | tar -x -C _site
+          rm -rf _site/.github
+
+      - name: Download BAND calendar
+        env:
+          BAND_FEED_URL: ${{ secrets.BAND_FEED_URL }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          url = os.environ.get("BAND_FEED_URL", "").strip()
+          if not url.startswith("https://"):
+              raise SystemExit(
+                  "BAND_FEED_URL must contain the complete HTTPS feed URL."
+              )
+
+          try:
+              request = urllib.request.Request(
+                  url,
+                  headers={"User-Agent": "Brennans-Calendar-Sync"}
+              )
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  data = response.read()
+          except Exception:
+              raise SystemExit(
+                  "BAND calendar download failed. "
+                  "Check the secret and try running the workflow again."
+              ) from None
+
+          text = data.decode("utf-8-sig", errors="replace").strip()
+          if not (
+              text.startswith("BEGIN:VCALENDAR")
+              and text.endswith("END:VCALENDAR")
+          ):
+              raise SystemExit(
+                  "BAND did not return a complete iCalendar feed. "
+                  "Deployment stopped."
+              )
+
+          Path("_site/calendar.ics").write_bytes(data)
+          print("Calendar feed downloaded and validated.")
+          PY
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload website
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy website
+        id: deployment
+        uses: actions/deploy-pages@v4
